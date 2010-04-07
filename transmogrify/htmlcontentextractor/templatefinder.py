@@ -1,5 +1,8 @@
 
 import fnmatch
+from StringIO import StringIO
+from sys import stderr
+
 from zope.interface import classProvides
 from zope.interface import implements
 from collective.transmogrifier.interfaces import ISectionBlueprint
@@ -14,9 +17,7 @@ from webstemmer.htmldom import parse
 from lxml import etree
 import lxml.html
 import lxml.html.soupparser
-
-from StringIO import StringIO
-from sys import stderr
+from lxml.etree import XPathEvalError
 
 #patch LayoutCluster to make it LayoutPattern
 def match_blocks(self, blocks0, strict=True):
@@ -111,9 +112,33 @@ class TemplateFinder(object):
 
 
     def __init__(self, transmogrifier, name, options, previous):
+        """ Initialize section blueprint.
+        
+        @param transmogrifier:  collective.transmogrifier.transmogrifier.Transmogrifier instance
+        
+        @param name: Section name as given in the blueprint
+        
+        @param previous: Prior blueprint in the chain. A Python generator object.
+        
+        @param options: Options as a dictionary as they appear in pipeline.cfg. Parsed INI format.
+        
+        """
+        
         self.previous = previous
         self.auto = options.get('auto', True)
         self.auto = self.auto in ['True','true','yes','Y']
+        
+        # Contains dictionary of nested dictionaries of field look-ups in their match order
+        
+        # {'1': {'text': [('html', "//div[@class='body']")], 
+        #        'permalink': [('text', "//div[@class='body']//a[@class='headerlink']")], 
+        #        'description': [('text', "//div[@class='body']/div[@class='section']/p[1]")], 
+        #        'title': [('text', "//div[@class='body']//h1[1]")]}, 
+        # '3': {'text': [('html', "//div[@class='body']")]}, 
+        # '2': ...
+        #
+        # Each field is tuple of format, extraction path, deletion path
+        # 
         self.groups = {}
         for key, value in options.items():
             if key in ['blueprint','auto']:
@@ -125,39 +150,91 @@ class TemplateFinder(object):
             xps = []
             for line in value.strip().split('\n'):
                 res = re.findall("^(text |html |)(.*)$", line)
+            
                 if not res:
+                    # does not start with text or html
+                    print "Line in invalid format:" + line
                     continue
                 else:
                     format,xp = res[0]
                 format = format.strip()
                 format = format == '' and 'html' or format
-                xps.append((format,xp))
+                
+                # Try get extration and deletion xpath
+                # the latter being optional
+                parts = xp.split(" ")
+                extraction_path = parts[0]
+                if len(parts) >= 2:
+                    deletion_path = parts[1]
+                else:
+                    deletion_path = None
+                    
+                # Make a record 
+                xps.append((format, extraction_path, deletion_path))
+            
             group = self.groups.setdefault(group, {})
             group[field] = xps
-
-
-    def __iter__(self):
-
-
-        notextracted = []
-        for item in self.previous:
-            content = self.getHtml(item)
-            if content is None:
-                yield item
-                continue
-            path = item['_site_url'] + item['_path']
             
-            # try each group in turn to see if they work
-            gotit = False
-            for groupname in sorted(self.groups.keys()):
+            
+    def check_and_extract(self, item, content):
+        """ Check whether extration XPath applies to the item being tested and then perform the extraction.
+                
+        @param content: Content HTML as string
+        
+        @return: True if the field was extracted and the item in the question was added the field value.
+        """
+        
+        path = item['_site_url'] + item['_path']
+
+        gotit = False
+        for groupname in sorted(self.groups.keys()):
                 group = self.groups[groupname]
                 tree = lxml.html.fromstring(content)
                 if group.get('path', path) == path and self.extract(group, tree, item):
                     gotit = True
                     break
+
+        return gotit
+    
+    def __iter__(self):
+        """
+        Perform the extration.
+        
+        Yiels item from the previous blueprint output, 
+        extractes necessary content, mutates content,
+        and passes the item forward.
+        """
+
+        # Contains name of the fields for which 
+        # we do not get match, and then perform automatic analysation for them
+        notextracted = []
+        
+        # Items are arbitary Python dictionary,
+        # which keys must be guessed based from the context
+        # this blueprint is run.
+        # Available keys in this point
+        # ['_type', '_sortorder', '_content_info', '_mimetype', 'text', '_origin', '_backlinks', '_site_url', '_path'] 
+        
+        # Keys starting with underscore are "hints" what the incoming is 
+        # Keys startting without underscore are extracted field values
+        for item in self.previous:
+            
+            # Parse payload of item to LXML tree
+            content = self.getHtml(item)
+            if content is None:
+                # print "No extractable HTML payload for item:" + item["_path"]
+                yield item
+                continue
+            
+            
+            # try each group in turn to see if they work
+            gotit = self.check_and_extract(item, content)
+         
             if gotit:
+                # Extracting using manual XPath succeed, we are done with the item
                 yield item
             else:
+                # Put item to auto-analyze queue
                 notextracted.append(item)
 
 
@@ -170,22 +247,72 @@ class TemplateFinder(object):
 
 
     def extract(self, pats, tree, item):
+        """ Update blueprint pipeline item with extracted field contents.
+        
+        Extract all fields in this pass.
+        
+        @param pats: Extraction patters for the current field group as fieldname : format + path record tuples
+        
+        @param tree: lxml parsed HTML tree as DOM
+        
+        @param item: Transmogrifier item being mutated
+            
+        """
+        
+        # Contains dictionary of field name : (format, payload) pairs
         unique = {}
+        
+        # List of node obejcts which have matched deletion expression
+        to_be_deleted = []
+        
+        # Each field is pair of name and list of XPath (format, extraction path, deletion path) tuples
         for field, xps in pats.items():
+            
+            # TODO: No clue what this is
             if field == 'path':
                 continue
-            for format, xp in xps:
-                nodes = tree.xpath(xp, namespaces=ns)
+            
+            # Go through all assigned extration patterns for this field
+            for format, xp, deletion_xp in xps:
+                
+                try:
+                    nodes = tree.xpath(xp, namespaces=ns)
+                except XPathEvalError, e:
+                    # Include XPath content in the error, makes debugging
+                    # lots of more fun
+                    # args = list o exception arguments, containing message
+                    e.args = list(e.args) + [u"Bad XPath '%s'" % xp]
+                    raise e
+                    
                 if not nodes:
                     print "TemplateFinder: NOMATCH: %s=%s(%s)" % (field, format, xp)
+                    # TODO: bug here?
                     return False
+                
+                deletion_nodes = None
+                if deletion_xp:
+                    # Do we have a special deletion XPath for this item
+                    deletion_nodes = tree.xpath(deletion_xp, namespaces=ns)
+                    if deletion_nodes:
+                        to_be_deleted += deletion_nodes
+                
+                # We might match several nodes per expression
+                # Convert field to (format, payload LXML nodes, deletion LXML nodes) record 
                 nodes = [(format, n) for n in nodes]
+                
+                # TODO: DOES NOT UNDERSTAND 
                 unique[field] = nonoverlap(unique.setdefault(field,[]), nodes)
+                
         extracted = {}
+        
         # we will pull selected nodes out of tree so data isn't repeated
-        for field, nodes in unique.items():
+        for field, nodes, in unique.items():
             for format, node in nodes:
                 node.drop_tree()
+                
+        for node in to_be_deleted:
+            node.drop_tree()
+        
         for field, nodes in unique.items():
             for format, node in nodes:
                 extracted.setdefault(field,'')
@@ -193,10 +320,14 @@ class TemplateFinder(object):
                     extracted[field] += etree.tostring(node, method='text', encoding=unicode) + ' '
                 else:
                     extracted[field] += '<div>%s</div>' % etree.tostring(node, method='html', encoding=unicode)
+        
         item.update(extracted)
+        
         if '_tree' in item:
             del item['_tree']
+        
         item['_template'] = None
+        
         return item
 
     def getHtml(self, item):
@@ -212,6 +343,11 @@ class TemplateFinder(object):
 
 
     def analyse(self, previous):
+        """
+        Perform automatic field extration without hints.
+        
+        Deep magic.
+        """
         (debug, cluster_threshold, title_threshold, score_threshold) = (0, 0.97, 0.6, 100)
         mangle_pat = None
         linkinfo = 'linkinfo'
