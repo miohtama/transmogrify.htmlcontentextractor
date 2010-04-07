@@ -1,11 +1,13 @@
+.. contents :: :local:
+
 Introduction
-============
+------------
 
 *transmogrify.htmlcontentextractor* is 
 collective.tansmogrify blueprint plug-in to extracts out title, description and body 
-from HTML either via xpath or by automatic cluster analysis
+from HTML either via XPath or by automatic cluster analysis
 
-HTML can be any incoming HTML page and XPath rules are used to extract sematic
+HTML can be any incoming HTML page. XPath rules or heurestics are used to extract sematic
 elements out of it.
 
 Usage
@@ -22,6 +24,8 @@ Options
 
 Each options consist of
 
+[priority]-[fieldname] = [text|html] [extraction XPath expression] [Clearing XPath expression]
+
 * priority-fieldname pair.
         
         * Available fieldnames: content, title, description (TODO: WHERE DO THEY COME FROM?)
@@ -32,20 +36,33 @@ Each options consist of
   first priority option first. If the extraction path is matched the item is automatically
   removed from the payload HTML.
 
-* Remove path expression - if the extration path is succesfully matched, these elements
-  will be removed from the payload HTML, besides the actual extraction path. 
-  This is useful e.g. when you take description
-  out of the content and you do not want the description to duplicate itself anymore
-  in the outgoing content HTML.
+* Clearing path expression - if the extration path is succesfully matched, these elements
+  will be removed from the payload HTML, besides the actual extraction path match. 
+  This is useful e.g. when you take description text
+  out of the content and you do not want the description decoration labels in the outgoing HTML.
   
 *Warning:* Due to how syntax is structured, spaces are not allowed inside XPath expressions 
 
-Example::
+Example in *pipeline.cfg*::
 
-    1-content = text //div
-    2-content = html //div
-    1-title = text //h1
-    2-title = html //h2
+        #
+        # Extract title, description and content text from Sphinx generated HTML page
+        #
+        # Title is the first <h1> element
+        #
+        # Description is reST "admonition" with name Description 
+        #
+        # Text is what is left to <body> after removing title and description 
+        #
+        # Note that spaces in XPaths must be escaped as &#32;
+        #
+        [templatefinder]
+        blueprint = transmogrify.htmlcontentextractor
+        auto=False
+        1-title = text //div[@class='body']//h1[1]
+        1-permalink = text //div[@class='body']//a[@class='headerlink']
+        1-description = text //div[contains(@class,'admonition-description')]//p[@class='last'] //div[contains(@class,'admonition-description')]  
+        1-text = html //div[@class='body']
     
     
 Special options
@@ -77,6 +94,9 @@ Use Firebug to test XPath
 Authors
 -------
 
-* Mikko Ohtamaa mikko@mfabrik.com http://mfabrik.com
+In the order of apperance...
 
 * Dylan Jay
+
+* Mikko Ohtamaa mikko@mfabrik.com http://mfabrik.com
+
