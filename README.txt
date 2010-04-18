@@ -24,24 +24,38 @@ Options
 
 Each options consist of
 
-[priority]-[fieldname] = [text|html] [extraction XPath expression] [Clearing XPath expression]
+[priority]-[fieldname] = [format] [extraction XPath expression] [Clearing XPath expression] [flags]
 
-* priority-fieldname pair.
+* priority-fieldname pair
         
-        * Available fieldnames: content, title, description (TODO: WHERE DO THEY COME FROM?)
+        * *priority* is an integer number starting from 1. If any of field matches
+          fail for one priority, htmlcontentextractor will try the next priority group.
         
-* Whether the field is *text* or *html*
+        * *fieldname* is the name of the sematic schema field which will
+          contain the extracted text.  Usually it is: ``text``, ``title`` or ``description`.
+        
+* *format* is ``text`` or ``html``. lxml is used to flatten the resulting nodes if ``text`
+  format is chosen. 
 
-* Extraction path expression - if this path is succesfully matched the content is extracted,
+* *Extraction path expression* - if this path is succesfully matched the content is extracted,
   first priority option first. If the extraction path is matched the item is automatically
   removed from the payload HTML.
 
-* Clearing path expression - if the extration path is succesfully matched, these elements
+* *Clearing path expression* **optional** - if the extration path is succesfully matched, these elements
   will be removed from the payload HTML, besides the actual extraction path match. 
   This is useful e.g. when you take description text
   out of the content and you do not want the description decoration labels in the outgoing HTML.
-  
-*Warning:* Due to how syntax is structured, spaces are not allowed inside XPath expressions 
+
+* *Flags* (**optional**) are comma separared text string hints regarding how this field should be regarded. 
+   Currently supported flags are
+   
+        * *soft*: this field does not necessary appear in the input HTML. If the 
+          field is missing the other extractors should still complete normally
+          and the field value is set to None.
+          
+.. warning ::
+
+        Due to how syntax is structured, spaces are not allowed inside XPath expressions 
 
 Example in *pipeline.cfg*::
 

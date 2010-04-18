@@ -149,28 +149,23 @@ class TemplateFinder(object):
                 group, field = '1',key
             xps = []
             for line in value.strip().split('\n'):
-                res = re.findall("^(text |html |)(.*)$", line)
-            
-                if not res:
-                    # does not start with text or html
-                    print "Line in invalid format:" + line
-                    continue
-                else:
-                    format,xp = res[0]
-                format = format.strip()
-                format = format == '' and 'html' or format
-                
+
                 # Try get extration and deletion xpath
                 # the latter being optional
-                parts = xp.split(" ")
-                extraction_path = parts[0]
-                if len(parts) >= 2:
-                    deletion_path = parts[1]
+                parts = line.split(" ", 4)
+                
+                # Fill in missing options with None
+                parts += [None] * (4 - len(parts))          
+                
+                format, extraction_path, deletion_path, options = parts
+                
+                if options == None:
+                    options = []
                 else:
-                    deletion_path = None
-                    
+                    options = options.lower().split(",")
+                                                                
                 # Make a record 
-                xps.append((format, extraction_path, deletion_path))
+                xps.append((format, extraction_path, deletion_path, options))
             
             group = self.groups.setdefault(group, {})
             group[field] = xps
@@ -273,7 +268,7 @@ class TemplateFinder(object):
                 continue
             
             # Go through all assigned extration patterns for this field
-            for format, xp, deletion_xp in xps:
+            for format, xp, deletion_xp, options in xps:
                 
                 try:
                     nodes = tree.xpath(xp, namespaces=ns)
@@ -286,36 +281,54 @@ class TemplateFinder(object):
                     
                 if not nodes:
                     print "TemplateFinder: NOMATCH: %s=%s(%s)" % (field, format, xp)
-                    # TODO: bug here?
-                    return False
+                    
+                    # Abort this priority group if the field dependency was not soft
+                    if not "soft" in options:
+                        print "Trying next priority extraction method"
+                        return False
+                    
+                    # format, nodes tuple
+                    unique[field] = None
                 
-                deletion_nodes = None
-                if deletion_xp:
-                    # Do we have a special deletion XPath for this item
-                    deletion_nodes = tree.xpath(deletion_xp, namespaces=ns)
-                    if deletion_nodes:
-                        to_be_deleted += deletion_nodes
+                else:
                 
-                # We might match several nodes per expression
-                # Convert field to (format, payload LXML nodes, deletion LXML nodes) record 
-                nodes = [(format, n) for n in nodes]
-                
-                # TODO: DOES NOT UNDERSTAND 
-                unique[field] = nonoverlap(unique.setdefault(field,[]), nodes)
+                    deletion_nodes = None
+                    if deletion_xp:
+                        # Do we have a special deletion XPath for this item
+                        deletion_nodes = tree.xpath(deletion_xp, namespaces=ns)
+                        if deletion_nodes:
+                            to_be_deleted += deletion_nodes
+                    
+                    # We might match several nodes per expression
+                    # Convert field to (format, payload LXML nodes, deletion LXML nodes) record 
+                    nodes = [(format, n) for n in nodes]
+                    
+                    # TODO: DOES NOT UNDERSTAND 
+                    unique[field] = nonoverlap(unique.setdefault(field,[]), nodes)
                 
         extracted = {}
         
         # we will pull selected nodes out of tree so data isn't repeated
         for field, nodes, in unique.items():
-            for format, node in nodes:
-                node.drop_tree()
+            if nodes != None:
+                for format, node in nodes:
+                    node.drop_tree()
                 
+        # Delete extra sections which are especially marked for the deleation
+        # if match is found
         for node in to_be_deleted:
             node.drop_tree()
         
         for field, nodes in unique.items():
+            
+            # Handle soft dependency fields
+            if nodes == None:
+                extracted[field] = None
+                continue
+            
             for format, node in nodes:
                 extracted.setdefault(field,'')
+                
                 if format == 'text':
                     extracted[field] += etree.tostring(node, method='text', encoding=unicode) + ' '
                 else:
