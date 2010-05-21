@@ -1,4 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
 
+    Split HTML content to fields using XPath or text analysis.
+
+
+"""
 import fnmatch
 from StringIO import StringIO
 from sys import stderr
@@ -240,6 +246,22 @@ class TemplateFinder(object):
             for item in notextracted:
                 yield item
 
+    def extract_text(self, node):
+        """ Extract text data from a node.
+        
+        Perform needed input sanitisation by stripping whitespaces and other non-convenient characters.
+        """
+        text = etree.tostring(node, method='text', encoding=unicode)
+        
+        # Sphinx HTML likes to populate titles with this character ¶ 
+        text = text.replace(u"¶", u"")
+        
+        # Remove surrounding whitespaces
+        text = text.strip()
+        
+        return text
+
+        
 
     def extract(self, pats, tree, item):
         """ Update blueprint pipeline item with extracted field contents.
@@ -330,7 +352,12 @@ class TemplateFinder(object):
                 extracted.setdefault(field,'')
                 
                 if format == 'text':
-                    extracted[field] += etree.tostring(node, method='text', encoding=unicode) + ' '
+                    
+                    if extracted[field] != "":
+                        # Merge subsequent strings as space separated
+                       extracted[field] += " " 
+                    
+                    extracted[field] += self.extract_text(node)
                 else:
                     extracted[field] += '<div>%s</div>' % etree.tostring(node, method='html', encoding=unicode)
         
